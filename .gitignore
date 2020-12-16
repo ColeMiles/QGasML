@@ -1,0 +1,11 @@
+StringDataDopingGrouped/
+ExpData/
+venv/
+NewCNN/log/
+NewCNN/model/
+NewCNN/filts/
+NewCNN/maps/
+*__pycache__*
+*.sh
+*.bak
+NewCNN/.idea/
