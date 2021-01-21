@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 import argparse
+import sys
 
 import torch
 import numpy as np
@@ -9,11 +10,16 @@ def extract_filts(model_files, out_filename):
     filts = []
     for filename in model_files:
         state_dict = torch.load(filename, map_location='cpu')
-        # Hacky way to detect CorrelatorExtractor log files
-        if "CorrelatorExtractor" in filename:
-            filts.append(state_dict['correlator.conv_filt'].cpu().numpy())
+        # Hacky way to find the conv_filt
+        keys = list(state_dict.keys())
+        for key in keys:
+            if key.find('conv_filt') >= 0 or key.find('conv_stencil') >= 0:
+                filts.append(state_dict[key].cpu().numpy())
+                break
         else:
-            filts.append(state_dict['conv1.weight'].cpu().numpy())
+            print("Couldn't find a conv_filt")
+            sys.exit(1)
+
     filts = np.concatenate(filts, axis=0)
     np.save(out_filename, filts)
 

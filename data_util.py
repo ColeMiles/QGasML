@@ -2,17 +2,17 @@
 """
 import pickle
 import itertools
-from typing import List
+from typing import List, Tuple, Dict, Generator
+import os
 
 import numpy as np
 import torch
 from torch.utils.data import TensorDataset, DataLoader
 
-
 def _center_crop(arr, size):
     """ Like torchvision.transforms.CenterCrop, but on numpy arrays
     """
-    w, h = arr.shape[-2], arr.shape[-1]
+    w, h = arr.shape[-2:]
     if w < size or h < size:
         raise ValueError("Array to crop is smaller than crop region.")
 
@@ -20,6 +20,18 @@ def _center_crop(arr, size):
     left, right = margin_w // 2, int(np.ceil(margin_w / 2))
     bot, top = margin_h // 2, int(np.ceil(margin_h / 2))
     return arr[..., left:w-right, bot:h-top]
+
+
+def _border_crop(arr, size):
+    """ Zeros out all pixels in the image, except for a boundary layer
+         of the given size.
+    """
+    w, h = arr.shape[-2:]
+    if w < 2 * size or h < 2 * size:
+        raise ValueError("Array to boundary crop is smaller than the asked size.")
+
+    arr[..., size:-size, size:-size] = 0
+    return arr
 
 
 def _circle_crop(arr):
@@ -40,7 +52,7 @@ def _circle_crop(arr):
         [1, 0, 0, 0, 0, 0, 0, 0, 0, 1],
         [1, 1, 1, 0, 0, 0, 0, 1, 1, 1]
     ]).astype(np.bool)
-    cropped_arr[..., zero_mask] = 0
+    cropped_arr[:, :, zero_mask] = 0
     return cropped_arr
 
 
@@ -55,15 +67,27 @@ def _hflip(arr):
 def _rot(arr, k):
     return torch.rot90(arr, k, [-2, -1])
 
+_sym_ops = [
+    lambda x: x,
+    lambda x: np.flip(x, axis=-1),
+    lambda x: np.flip(x, axis=-2),
+    lambda x: np.rot90(x, axes=(-2, -1)),
+    lambda x: np.rot90(x, 2, axes=(-2, -1)),
+    lambda x: np.rot90(x, 3, axes=(-2, -1)),
+    lambda x: np.rot90(np.flip(x, axis=-1), axes=(-2, -1)),
+    lambda x: np.rot90(np.flip(x, axis=-2), axes=(-2, -1))
+]
 
-def _flip_spins(snap):
-    """ Flips all spins in the spin channel of an input snapshots
-    """
-    flipped = torch.empty_like(snap)
-    flipped[..., 0, :, :] = -snap[..., 0, :, :]
-    flipped[..., 1:, :, :] = snap[..., 1:, :, :]
-    return flipped
-
+_inv_ops = [
+    lambda x: x,
+    lambda x: np.flip(x, axis=-1),
+    lambda x: np.flip(x, axis=-2),
+    lambda x: np.rot90(x, -1, axes=(-2, -1)),
+    lambda x: np.rot90(x, -2, axes=(-2, -1)),
+    lambda x: np.rot90(x, -3, axes=(-2, -1)),
+    lambda x: np.flip(np.rot90(x, -1, axes=(-2, -1)), axis=-1),
+    lambda x: np.flip(np.rot90(x, -1, axes=(-2, -1)), axis=-2)
+]
 
 def _staggered_mag(snapshot, parity=0):
     """ Calculates the staggered magnetization of a snapshot, defined as
@@ -166,8 +190,8 @@ class BalancedSampler(torch.utils.data.Sampler):
                     oversample_indices = torch.randperm(len(indices))[:num_extra_needed]
                     epoch_sample_indices.append(indices[oversample_indices])
                 elif num_extra_needed == 1:
-                    oversample_index = torch.randint(len(indices))
-                    epoch_sample_indices.append(indices[oversample_index])
+                    oversample_index = torch.randint(len(indices), (1,))
+                    epoch_sample_indices.append(torch.tensor([indices[oversample_index]]))
 
         epoch_sample_indices = np.concatenate(epoch_sample_indices)
 
@@ -204,186 +228,226 @@ class TransformedDataset(torch.utils.data.Dataset):
         return tuple(tensor[idx] for tensor in self.tensors)
 
 
-class RandomGroupedLoader:
-    """ Acts like a DataLoader, but each element in the batch returned is a group of snapshots
-         of the same class. Also oversamples examples to make an even class distribution.
-    """
-    def __init__(self, snapshot_dict, group_size, transform=None, batch_size=1,
-                 shuffle=False, balance=False):
-        self.loaders = {
-            label: DataLoader(
-                TransformedDataset(snapshots, transform=transform),
-                batch_size=group_size,
-                drop_last=True,
-                shuffle=shuffle,
-                num_workers=4
-            )
-            for label, snapshots in snapshot_dict.items()
-        }
-        self.load_iters = {
-            label: _repeat_iter(loader) for label, loader in self.loaders.items()
-        }
-        self.num_classes = len(snapshot_dict)
-        self.largest_class_size = max(len(v) for v in self.loaders.values()) if self.num_classes != 0 else 0
-        self.group_size = group_size
-        self.batch_size = batch_size
-        self.shuffle = shuffle
-        self.balance = balance
-        if self.num_classes != 0:
-            # This is really dumb, change this...
-            avail_label = next(iter(snapshot_dict.keys()))
-            self.snapshot_size = snapshot_dict[avail_label][0].shape[-1]
-        else:
-            self.snapshot_size = 0
-
-    def __iter__(self):
-        # For this iteration, decide in what order we'll sample from each class
-        if self.balance:
-            # Oversample every class so that we sample the same number of examples from each class
-            class_sampler_order = np.concatenate(
-                [np.full(self.largest_class_size, k) for k in self.loaders.keys()]
-            )
-        else:
-            class_sampler_order = np.concatenate(
-                [np.full(len(v), k) for k, v in self.loaders.items()]
-            )
-
-        if self.shuffle:
-            class_sampler_order = np.random.permutation(class_sampler_order)
-        for i in range(self.__len__()):
-            start_idx = i * self.batch_size
-            batch_snapshots = []
-            batch_labels = class_sampler_order[start_idx:start_idx+self.batch_size]
-            for label in batch_labels:
-                batch_snapshots.append(next(self.load_iters[label])[0])
-            yield torch.stack(batch_snapshots, dim=0), torch.tensor(batch_labels)
-
-    def __len__(self):
-        if self.balance:
-            return int(np.ceil(self.largest_class_size * self.num_classes / self.batch_size))
-        else:
-            return int(np.ceil(sum(len(loader) for loader in self.loaders.values()) / self.batch_size))
-
-    def extend(self, other):
-        """ Extends this loader with the data contained in another RandomGroupedLoader
-        """
-        self.loaders = {
-            label: DataLoader(
-                torch.utils.data.ConcatDataset([self_loader.dataset, other.loaders[label].dataset]),
-                batch_size=self.group_size,
-                drop_last=True,
-                shuffle=self.shuffle,
-            )
-            for label, self_loader in self.loaders.items()
-        }
-        self.load_iters = {
-            label: _repeat_iter(loader) for label, loader in self.loaders.items()
-        }
-        self.largest_class_size = max(len(v) for v in self.loaders.values())
-
-
-def single_grouped_loader(snapshot_dict, transform=None, shuffle=False, **kwargs):
-    """ For a group size of 1, it is preferable to just add an extra dimension to the snapshots
-         rather than using the (considerably slower) RandomGroupedLoader. This function makes a DataLoader
-         which does that.
-        Warning: This does not implement oversampling! So, ensure your class distributions are at least
-         relatively close on your dataset if using this.
-    """
-    if len(snapshot_dict) == 0:
-        return None
-
-    snapshots = torch.cat(tuple(snapshot_dict.values()))
-    # Add a fake "group" dimension of size 1
-    snapshots = snapshots.unsqueeze(1)
-    labels = torch.cat(tuple(
-        torch.full((len(snapshot_dict[label]),), label, dtype=torch.int64)
-        for label in snapshot_dict.keys()
-    ), dim=0)
-    dataset = TransformedDataset(snapshots, labels, transform=transform)
-
-    sampler = BalancedSampler(labels) if shuffle else None
-    loader = DataLoader(dataset, sampler=sampler, **kwargs)
-    return loader
-
-
-def build_datasets(pkl_files: List[str], labels: List[int], group_size=1, batch_size=1,
-                   transform=None, oversample=True, crop=None, circle_crop=False,):
+def build_data_loader(tensors: List[torch.Tensor], batch_size=1, transform=None,
+                      oversample=True, shuffle=False, chop_even=False,
+                      **kwargs) -> torch.utils.data.DataLoader:
     """ Builds train/eval sets from pickled data files.
-          pkl_files:    List of pickle files of snapshots
-          labels:       List of class labels for each pickle file.
-          group_size:   Collates snapshots of the same class into groups of this size along an extra dim
+          tensors:      List of snapshot tensors of shape [NSNAPS, NCHAN, WIDTH, HEIGHT]. Each
+                            tensor is assumed to be a different class.
           batch_size:   The batch size of the loaders
           transform:    An optional transformation to apply to training snapshots as they're sampled
           oversample:   If True, will oversample classes in the training set to provide an even distribution.
                          If False, will just completely drop snapshots to make the distribution even.
           crop:         If not None, crops to a square of the given size
           circle_crop:  If True, crops snapshots to the circular region obtained from experiment
+          shuffle:      If True, batches of snapshots are shuffled each epoch
         The returned loaders will produce tensors of shape
-            [batch_size, group_size, num_channels, 10, 10]
+            [batch_size, group_size, num_channels, width, height]
          along with label vectors of length [batch_size]
     """
-    if len(pkl_files) != len(labels):
-        raise ValueError('pkl_files and labels not the same length.')
-
-    all_labels = torch.unique(torch.tensor(labels)).tolist()
-
-    # These dicts will map class labels to tensors of snapshots
-    train_snapshot_dict = {l: [] for l in all_labels}
-    val_snapshot_dict = {l: [] for l in all_labels}
-    for pkl_file, label in zip(pkl_files, labels):
-        with open(pkl_file, "rb") as ifile:
-            # List of lists [singles, spinups, spindowns]
-            snapshot_dict = pickle.load(ifile)
-            # Include both the spin up and the spin down snapshots -- the
-            #   statistics should be identical for both of them
-            raw_snapshots = np.stack(snapshot_dict["snapshots"], axis=0)
-
-            if crop is not None:
-                # Crop out the central square part of the snapshots, masked to shape of experiment
-                cropped_snapshots = _center_crop(raw_snapshots, crop)
-            elif circle_crop:
-                cropped_snapshots = _circle_crop(raw_snapshots)
-            else:
-                cropped_snapshots = raw_snapshots
-
-            train_idxs = snapshot_dict["train_idxs"]
-            val_idxs = snapshot_dict["val_idxs"]
-            train_snapshot_dict[label].append(cropped_snapshots[train_idxs])
-            val_snapshot_dict[label].append(cropped_snapshots[val_idxs])
-
-    # Collect snapshots from all of the files into single tensors
-    for snapshot_dict in [train_snapshot_dict, val_snapshot_dict]:
-        for label, snapshots in snapshot_dict.items():
-            # Stack all of the snapshots into an array of shape [NSNAPSHOTS, 10, 10]
-            snapshot_dict[label] = torch.tensor(np.concatenate(snapshots, axis=0), dtype=torch.float32)
-            # If missing a channel dimension, add a singleton dimension
-            if len(snapshot_dict[label].shape) < 4:
-                snapshot_dict[label] = snapshot_dict[label].unsqueeze(1)
-        # Remove empty tensors from dict
-        empty_labels = [label for label, tensor in snapshot_dict.items() if len(tensor) == 0]
-        for label in empty_labels:
-            del snapshot_dict[label]
+    num_classes = len(tensors)
 
     # If we're not oversampling, drop snapshots to make the train distribution even
-    if not oversample:
-        min_size = min(len(snapshots) for snapshots in train_snapshot_dict.values())
-        for label in train_snapshot_dict.keys():
-            train_snapshot_dict[label] = train_snapshot_dict[label][:min_size]
+    if not oversample and chop_even:
+        min_size = min(map(len, tensors))
+        for i in range(num_classes):
+            tensors[i] = tensors[i][:min_size]
 
-    # This is *much* faster
-    if group_size == 1:
-        train_loader = single_grouped_loader(train_snapshot_dict, transform=transform,
-                                             batch_size=batch_size, shuffle=True,)
-        val_loader = single_grouped_loader(val_snapshot_dict, transform=transform,
-                                           batch_size=batch_size, shuffle=False,)
+    # Produce a tensor of labels matching the lengths of the lists of tensors
+    labels = torch.cat(tuple(
+        torch.full((len(snaps),), label, dtype=torch.int64)
+        for label, snaps in enumerate(tensors)
+    ), dim=0)
+
+    tensors = torch.cat(tensors)
+    dataset = TransformedDataset(tensors, labels, transform=transform)
+
+    if oversample:
+        sampler = BalancedSampler(labels) if oversample else None
+        shuffle = False
     else:
-        train_loader = RandomGroupedLoader(
-            train_snapshot_dict, group_size,
-            transform=transform, batch_size=batch_size, shuffle=True, balance=oversample,
-        )
-        val_loader = RandomGroupedLoader(
-            val_snapshot_dict, group_size,
-            transform=transform, batch_size=batch_size, shuffle=False, balance=False,
-        )
+        sampler = None
+
+    loader = DataLoader(dataset, batch_size=batch_size, sampler=sampler, shuffle=shuffle, **kwargs)
+    return loader
+
+
+## Functions below here are specialized data loaders for different datasets ##
+
+
+def load_qgm_data(datadir: str, doping_level: float, crop=None,
+                  circle_crop=False) -> Tuple[torch.Tensor, torch.Tensor]:
+    """ Specialized data-loader function for the data format used in the
+         original CCNN paper. 
+    """
+    datafiles = [
+        os.path.join(datadir, f) for f in os.listdir(datadir)
+        if f.endswith('d{}.pkl'.format(doping_level))
+    ]
+    train_snaps = []
+    val_snaps = []
+
+    for pkl_file in datafiles:
+        with open(pkl_file, 'rb') as f:
+            snap_dict = pickle.load(f)
+            snaps = np.stack(snap_dict['snapshots'], axis=0).astype(np.float64)
+            if crop is not None:
+                snaps = _center_crop(snaps, crop)
+            elif circle_crop:
+                snaps = _circle_crop(snaps)
+
+            train_idxs = snap_dict['train_idxs']
+            val_idxs = snap_dict['val_idxs']
+            train_snaps.append(snaps[train_idxs])
+            val_snaps.append(snaps[val_idxs])
+
+    train_snaps = np.concatenate(train_snaps, axis=0)
+    val_snaps = np.concatenate(val_snaps, axis=0)
+    train_snaps = torch.tensor(train_snaps, dtype=torch.float32)
+    val_snaps = torch.tensor(val_snaps, dtype=torch.float32)
+    return train_snaps, val_snaps
+
+
+def load_rydberg_data(datadir: str, postselect: bool,
+                      crop=None, border_crop=None, fold=1) -> Tuple[torch.Tensor, torch.Tensor]:
+    """ Specialized data-loader function for the data format used in the
+         Rydberg phase-discovery paper. This function supports the selection
+         of one of ten folds using the `fold` argument.
+    """
+    # Find the datafiles
+    datafiles = [
+        os.path.join(datadir, f) for f in os.listdir(datadir)
+        if f.count('rydberg') > 0
+    ]
+
+    if fold < 1 or fold > 10:
+        raise ValueError("Valid values for `fold` are [1, 10]!")
+
+    train_snaps = []
+    val_snaps = []
+    for npz_file in datafiles:
+        loaded_npz = np.load(npz_file)
+        snaps = loaded_npz['rydberg_populations']
+        snaps = np.transpose(snaps, (2, 1, 0)).astype(np.float32)
+
+        if crop is not None:
+            snaps = _center_crop(snaps, crop)
+        if border_crop is not None:
+            snaps = _border_crop(snaps, crop)
+
+        if postselect:
+            mask_npz = npz_file.replace('rydberg', 'rearrangement_mask')
+            loaded_mask_npz = np.load(mask_npz)
+            mask = loaded_mask_npz['rearrangement_mask']
+            snaps = snaps[mask]
+
+        # Train/val split set by `fold`.
+        val_start = int((fold - 1) * 0.1 * len(snaps))
+        val_end = int(fold * 0.1 * len(snaps))
+        val_snaps.append(snaps[val_start:val_end])
+
+        if val_start > 0:
+            train_snaps.append(snaps[:val_start])
+        if val_end < len(snaps):
+            train_snaps.append(snaps[val_end:])
+
+
+    train_snaps = np.concatenate(train_snaps, axis=0)
+    val_snaps = np.concatenate(val_snaps, axis=0)
+    # Add a channel dimension to the snapshot tensors
+    train_snaps = torch.tensor(train_snaps).unsqueeze(1)
+    val_snaps = torch.tensor(val_snaps).unsqueeze(1)
+    return train_snaps, val_snaps
+
+
+def from_config(config: Dict) -> Tuple[DataLoader, DataLoader]:
+    """ From a config file, produce the train and validation data loaders.
+    """
+    base_data_dir = config['Data Files']['base_dir']
+    datasets = config['Data Files']['datasets']
+    batch_size = config['Training']['batch_size']
+    augment = config['Preprocessing']['augment']
+    oversample = config['Preprocessing']['oversample']
+    # Evaluate the string to the proper function in this file
+    load_func = eval(config['Data Files']['loader_func'])
+    load_kwargs = config['Loader Kwargs']
+
+    # Create paths to data files
+    train_val_splits = map(
+        lambda dset: load_func(
+            os.path.join(base_data_dir, 'Dataset{}'.format(dset)), **load_kwargs
+        ), datasets
+    )
+    train_tensors = []
+    val_tensors = []
+    for train_tens, val_tens in train_val_splits:
+        train_tensors.append(train_tens)
+        val_tensors.append(val_tens)
+
+    # Build datasets / loaders
+    transform = RandomAugmentation() if augment else None
+    train_loader = build_data_loader(train_tensors, batch_size=batch_size,
+                                     transform=transform, oversample=oversample,
+                                     shuffle=True)
+    val_loader = build_data_loader(val_tensors, batch_size=batch_size, transform=None,
+                                   oversample=False, shuffle=False)
 
     return train_loader, val_loader
+
+
+def from_config_ovr(config: Dict) -> Generator[Tuple[DataLoader, DataLoader], None, None]:
+    """ From a config file, yields train and valdation loaders for all combinations
+         where class 0 is one of the original classes, and class 1 is the rest of the
+         classes together.
+    """
+    base_data_dir = config['Data Files']['base_dir']
+    datasets = config['Data Files']['datasets']
+    batch_size = config['Training']['batch_size']
+    augment = config['Preprocessing']['augment']
+    oversample = config['Preprocessing']['oversample']
+    # Evaluate the string to the proper function in this file
+    load_func = eval(config['Data Files']['loader_func'])
+    load_kwargs = config['Loader Kwargs']
+
+    # Create paths to data files
+    train_val_splits = map(
+        lambda dset: load_func(
+            os.path.join(base_data_dir, 'Dataset{}'.format(dset)), **load_kwargs
+        ), datasets
+    )
+    train_tensors = []
+    val_tensors = []
+    for train_tens, val_tens in train_val_splits:
+        train_tensors.append(train_tens)
+        val_tensors.append(val_tens)
+
+    # For OVR, need to also handle oversampling here so that the "rest" class equally represents
+    #  all of the other classes
+    if oversample:
+        max_len_t = max(map(len, train_tensors))
+        max_len_v = max(map(len, val_tensors))
+        for i, t in enumerate(train_tensors):
+            num_copies, extra = divmod(max_len_t, len(t))
+            # Add additional copies of snapshots up to match max_len
+            train_tensors[i] = torch.cat(num_copies * [t] + [t[:extra]], dim=0)
+        for i, t in enumerate(val_tensors):
+            num_copies, extra = divmod(max_len_v, len(t))
+            # Add additional copies of snapshots up to match max_len
+            val_tensors[i] = torch.cat(num_copies * [t] + [t[:extra]], dim=0)
+
+    # Build datasets / loaders
+    transform = RandomAugmentation() if augment else None
+
+    num_classes = len(train_tensors)
+    for n in range(num_classes):
+        out_class_train_tensors = [train_tensors[m] for m in range(num_classes) if m != n]
+        ovr_train_tensors = [train_tensors[n], torch.cat(out_class_train_tensors, dim=0)]
+        train_loader = build_data_loader(ovr_train_tensors, batch_size=batch_size,
+                                         transform=transform, oversample=True,
+                                         shuffle=True)
+        out_class_val_tensors = [val_tensors[m] for m in range(num_classes) if m != n]
+        ovr_val_tensors = [val_tensors[n], torch.cat(out_class_val_tensors, dim=0)]
+        val_loader = build_data_loader(ovr_val_tensors, batch_size=batch_size, transform=None,
+                                       oversample=True, shuffle=False)
+
+        yield train_loader, val_loader

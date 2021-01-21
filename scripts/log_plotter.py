@@ -130,6 +130,33 @@ if __name__ == '__main__':
                         help='If set, plots represent the `best seen so far` at each epoch')
     args = parser.parse_args()
 
+    params = {
+        'font.family': 'CMU Sans Serif',
+        'axes.titlesize': 20,
+        'axes.labelsize': 36,
+        'axes.linewidth': 2,
+        #     'axes.labelpad': 40, # 3D only
+        'axes.labelpad': 0,  # 2D
+        'xtick.labelsize': 32,
+        'ytick.labelsize': 32,
+        'xtick.minor.width': 1,
+        'xtick.minor.size': 5,
+        'xtick.major.width': 2,
+        'xtick.major.size': 10,
+        'ytick.major.width': 2,
+        'ytick.major.size': 10,
+        'xtick.direction': 'in',
+        'ytick.minor.width': 1,
+        'ytick.minor.size': 5,
+        'ytick.direction': 'in',
+        'font.weight': 'normal',
+        'axes.unicode_minus': False,
+        'legend.fontsize': 36,
+        'mathtext.fontset': 'cm'
+    }
+
+    plt.rcParams.update(params)
+
     if all([not args.val_acc, not args.val_loss, not args.train_acc, not args.train_loss]):
         print('No data set to be plotted! Exiting...')
         sys.exit(1)
@@ -151,5 +178,5 @@ if __name__ == '__main__':
     logfiles, file_labels = collect_logfiles(args.logprefixes, args.labels)
     logfiles = [open(file, 'r') for file in logfiles]
 
-    plt.style.use("seaborn-paper")
+    # plt.style.use("seaborn-paper")
     make_plot(logfiles, metrics, file_labels, args.title, args.smooth, args.max)

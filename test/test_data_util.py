@@ -59,34 +59,3 @@ def test_balanced_sampler():
     zero_count = index_counts[0]
     for count in index_counts:
         assert abs(zero_count - count) <= 1
-
-
-def test_grouped_loader(fake_snapshots):
-    snapshot_dict = {
-        0: fake_snapshots[:50],
-        1: fake_snapshots[50:]
-    }
-    batch_size = 2
-    group_size = 4
-    loader = data_util.RandomGroupedLoader(snapshot_dict, group_size, batch_size=batch_size)
-
-    first_group, first_labels = next(iter(loader))
-    assert first_group.shape[0] == batch_size
-    assert first_group.shape[1] == group_size
-
-    # Check that the groups get mixed up on each iteration
-    first_group_p, first_labels_p = next(iter(loader))
-    assert not torch.all(torch.eq(first_group, first_group_p))
-
-    # Check that the labels are matched up correctly
-    # A better solution probably exists
-    for snaps, labels in loader:
-        for i in range(batch_size):
-            # Find the desired label of the group by brute search
-            for j in range(group_size):
-                for snap_idx, compare_snap in enumerate(fake_snapshots):
-                    if torch.all(torch.eq(compare_snap, snaps[i, j])):
-                        true_label = int(snap_idx >= 50)
-                        assert true_label == labels[i]
-                        break
-

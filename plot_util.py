@@ -1,14 +1,14 @@
+""" Various plotting functions to make diagrams from papers.
+"""
+
 import os
 import sys
 
 import matplotlib.pyplot as plt
 import matplotlib.colors as colors
+import matplotlib.cm as cm
 import numpy as np
 import torch
-
-SCRIPTPATH = os.path.abspath(__file__)
-REPODIR = os.path.split(os.path.split(os.path.split(SCRIPTPATH)[0])[0])[0]
-sys.path.append(os.path.join(REPODIR, 'NewCNN'))
 
 
 def plot_corr_filters(filters, num_cols=3, imshow=False, norm=True, title="", show=True):
@@ -27,33 +27,33 @@ def plot_corr_filters(filters, num_cols=3, imshow=False, norm=True, title="", sh
     # Make color maps
     reds = plt.get_cmap('Reds')
     trunc_reds = colors.LinearSegmentedColormap.from_list(
-        'TruncReds', reds(np.linspace(0.1, 1.0))
+        'TruncReds', reds(np.linspace(0.01, 1.0))
     )
-    trunc_reds.set_under('white', 0.05)
+    trunc_reds.set_under('white')
     blues = plt.get_cmap('Blues')
     trunc_blues = colors.LinearSegmentedColormap.from_list(
-        'TruncBlues', blues(np.linspace(0.1, 1.0))
+        'TruncBlues', blues(np.linspace(0.01, 1.0))
     )
-    trunc_blues.set_under('white', 0.05)
+    trunc_blues.set_under('white')
     greens = plt.get_cmap('Greens')
     trunc_greens = colors.LinearSegmentedColormap.from_list(
-        'TruncGreens', greens(np.linspace(0.1, 1.0))
+        'TruncGreens', greens(np.linspace(0.01, 1.0))
     )
-    trunc_greens.set_under('white', 0.05)
+    trunc_greens.set_under('white')
 
     hole_idx = 0 if num_chans == 1 else 2
     for i, filt in enumerate(filters):
         # Normalize the filt such that max is 1 -- be careful with filters that are all off!
         if norm:
             maxval = np.max(filt)
-            # Hard zero out filter where all pixels < 1e-5 -- this filter was turned off
-            if maxval < 1e-5:
+            # Hard zero out filter where all pixels < 1e-4 -- this filter was turned off
+            if maxval < 1e-4:
                 filt[:] = 0
-                continue
-            # Normalize filt so maxval = 1
-            filt /= maxval
-            # Hard zero out things < 1% of largest value
-            filt[filt < 0.01] = 0
+            else:
+                # Normalize filt so maxval = 1
+                filt /= maxval
+                # Hard zero out things < 1% of largest value
+                filt[filt < 0.01] = 0
         row_idx = i % num_rows
         col_idx = i // num_rows
 
@@ -63,45 +63,63 @@ def plot_corr_filters(filters, num_cols=3, imshow=False, norm=True, title="", sh
             ax1 = fig.add_subplot(innergrid[0, 0])
             ax1.axis('off')
             if imshow:
-                im1 = ax1.imshow(filt[0], cmap=trunc_reds, vmin=0.05, vmax=1.0, origin='lower')
+                im1 = ax1.imshow(filt[0], cmap=trunc_reds, vmin=0.01, vmax=1.0, origin='lower')
             else:
-                im1 = ax1.pcolor(filt[0], cmap=trunc_reds, vmin=0.05, vmax=1.0, linewidth=1, edgecolors='k')
+                im1 = ax1.pcolor(filt[0], cmap=trunc_reds, vmin=0.01, vmax=1.0, linewidth=1, edgecolors='k')
             ax1.set_aspect('equal')
             ax1.set_title(i)
 
             ax2 = fig.add_subplot(innergrid[1, 0])
             ax2.axis('off')
             if imshow:
-                im2 = ax2.imshow(filt[1], cmap=trunc_blues, vmin=0.05, vmax=1.0, origin='lower')
+                im2 = ax2.imshow(filt[1], cmap=trunc_blues, vmin=0.01, vmax=1.0, origin='lower')
             else:
-                im2 = ax2.pcolor(filt[1], cmap=trunc_blues, vmin=0.05, vmax=1.0, linewidth=1, edgecolor='k')
+                im2 = ax2.pcolor(filt[1], cmap=trunc_blues, vmin=0.01, vmax=1.0, linewidth=1, edgecolor='k')
             ax2.set_aspect('equal')
 
-        if num_chans == 1 or num_chans == 3:
+        if num_chans == 1:
             ax3 = fig.add_subplot(innergrid[hole_idx, 0])
             ax3.axis('off')
             if imshow:
-                im3 = ax3.imshow(filt[hole_idx], cmap=trunc_greens, vmin=0.05, vmax=1.0, origin='lower')
+                im3 = ax3.imshow(filt[hole_idx], cmap=trunc_reds, vmin=0.01, vmax=1.0, origin='lower')
             else:
-                im3 = ax3.pcolor(filt[hole_idx], cmap=trunc_greens, vmin=0.05, vmax=1.0, linewidth=1, edgecolor='k')
+                im3 = ax3.pcolor(filt[hole_idx], cmap=trunc_reds, vmin=0.01, vmax=1.0, linewidth=1,
+                                 edgecolor='k')
+            ax3.set_aspect('equal')
+            ax3.set_title(i)
+        if num_chans == 3:
+            ax3 = fig.add_subplot(innergrid[hole_idx, 0])
+            ax3.axis('off')
+            if imshow:
+                im3 = ax3.imshow(filt[hole_idx], cmap=trunc_greens, vmin=0.01, vmax=1.0, origin='lower')
+            else:
+                im3 = ax3.pcolor(filt[hole_idx], cmap=trunc_greens, vmin=0.01, vmax=1.0, linewidth=1, edgecolor='k')
             ax3.set_aspect('equal')
 
     caxgrid = outergrid[:, -1].subgridspec(1, num_chans)
     if num_chans >= 2:
         cax1 = fig.add_subplot(caxgrid[0, 0])
-        cax1.set_title('↑')
+        # cax1.set_title('↑')
+        cax1.set_title('Mag')
         cax1.axis('off')
         fig.colorbar(im1, cax=cax1, extend='min')
         cax2 = fig.add_subplot(caxgrid[0, 1])
-        cax2.set_title('↓')
+        # cax2.set_title('↓')
+        cax2.set_title('Hole')
         cax2.axis('off')
         cbar2 = fig.colorbar(im2, cax=cax2, extend='min')
         if num_chans == 2:
             cax2.axis('on')
             cbar2.set_ticks([0.05, 0.1, 0.2, 0.4, 0.6, 0.8, 1.0])
-    if num_chans == 1 or num_chans == 3:
+    if num_chans == 1:
         cax3 = fig.add_subplot(caxgrid[0, hole_idx])
-        cax3.set_title('Hole')
+        cax3.set_title('Weight')
+        cbar3 = fig.colorbar(im3, cax=cax3, extend='min')
+        cbar3.set_ticks([0.01, 0.1, 0.2, 0.4, 0.6, 0.8, 1.0])
+
+    if num_chans == 3:
+        cax3 = fig.add_subplot(caxgrid[0, hole_idx])
+        cax3.set_title('○')
         cbar3 = fig.colorbar(im3, cax=cax3, extend='min')
         cbar3.set_ticks([0.1, 0.2, 0.4, 0.6, 0.8, 1.0])
 
@@ -227,71 +245,104 @@ def plot_filters(filters, imshow=False, hole=False, num_cols=3):
     return fig
 
 
-def plot_l1_path(cs, coeffs, train_accs, val_accs, exp_pcts, order=4, correlator=True, plot_exp=False):
-    plt.rcParams["font.family"] = "CMU Serif"
-    plt.rcParams["text.usetex"] = True
-    if plot_exp:
-        fig, (coeff_ax, acc_ax, pred_ax) = plt.subplots(3, 1, figsize=(10, 15), sharex=True)
-        if len(exp_pcts) > 0:
-            pred_ax.plot(cs, exp_pcts, lw=3, color='darkorchid')
-        pred_ax.plot(cs, np.full(len(cs), 0.5), 'k--')
-        pred_ax.set_ylabel('Frac of Exp classified as AS')
-        pred_ax.set_xlabel(r"$1/\lambda$")
-    else:
-        fig, (coeff_ax, acc_ax) = plt.subplots(2, 1, figsize=(10, 10), sharex=True)
-        acc_ax.set_xlabel(r"$1/\lambda$")
+def plot_l1_path(cs, coeffs, train_accs, val_accs, order=4, correlator=True):
+    if len(coeffs.shape) == 2:
+        coeffs = coeffs.reshape((1, order, coeffs.shape[-1] // order))
+    if len(val_accs.shape) == 1:
+        train_accs = np.expand_dims(train_accs, axis=0)
+    if len(val_accs.shape) == 1:
+        val_accs = np.expand_dims(val_accs, axis=0)
 
-    coeff_ax.set_xscale('log')
-    coeff_ax.set_ylabel(r"$\beta$ Coeffs")
-    acc_ax.set_xscale('log')
-    acc_ax.set_ylabel("Accuracy")
-    acc_ax.plot(cs, val_accs, lw=3, color='crimson', label="Val")
-    acc_ax.plot(cs, train_accs, lw=3, color='black', label="Train")
-    acc_ax.legend()
+    num_classes, order, num_filts, num_cs = coeffs.shape
+
+    plt.rcParams["font.family"] = "CMU Sans Serif"
+    plt.rcParams["text.usetex"] = True
+
+    fig, axes = plt.subplots(2, num_classes, figsize=(10, 10), sharex=True, squeeze=False)
+
+    coeff_axes = axes[0, :]
+    for ax in coeff_axes:
+        ax.set_xscale('log')
+        ax.set_yscale('symlog', linthresh=0.1)
+        ax.set_ylabel(r'$\beta$ Coeffs')
+    acc_axes = axes[1, :]
+    for n, ax in enumerate(acc_axes):
+        ax.set_xlabel(r"$1/\lambda$")
+        ax.set_xscale('log')
+        ax.set_ylabel("Accuracy")
+        ax.plot(cs, val_accs[n], lw=3.5, color='crimson', label="Val")
+        ax.plot(cs, train_accs[n], lw=3.5, color='black', label="Train")
+        ax.legend()
     fig.tight_layout()
 
     # Assume we'll never plot paths with more than five filters, and usually only up to fourth order.
     # First two filters can go up to sixth order
     colors = [
-        ["xkcd:deep purple", "xkcd:royal purple", "xkcd:violet", "xkcd:light purple", "xkcd:magenta", "xkcd:pink"],
+        ["xkcd:black", "xkcd:royal purple", "xkcd:violet", "xkcd:light purple", "xkcd:magenta", "xkcd:pink"],
         ["xkcd:burnt umber", "xkcd:dark orange", "xkcd:orange", "xkcd:pale orange", "xkcd:gold", "xkcd:yellow"],
         ["xkcd:dark red", "crimson", "xkcd:bright red", "xkcd:light red"],
         ["xkcd:dark green", "xkcd:deep green", "xkcd:emerald", "xkcd:seafoam green"],
         ["xkcd:dark blue", "xkcd:royal blue", "xkcd:azure", "xkcd:aqua blue"],
     ]
 
-    num_filts = coeffs.shape[1] // order
-    for n in range(order):
-        for i in range(num_filts):
-            if correlator:
-                try:
-                    color = colors[i][n]
-                except IndexError:
-                    color = None
-                # Plot negative coefficient so that the first dataset is "up"
-                coeff_ax.plot(cs, -coeffs[:, num_filts*n+i], color=color, lw=2)
-            else:
-                coeff_ax.plot(cs, -coeffs[:, num_filts*n+i], lw=2)
+    for c in range(num_classes):
+        coeff_ax = coeff_axes[c]
+        cmin, cmax = np.min(coeffs[c]), np.max(coeffs[c])
+        cmin = min(cmin, -cmax)
+        cmax = max(cmax, -cmin)
+        for n in range(order):
+            for i in range(num_filts):
+                if correlator:
+                    try:
+                        color = colors[i][n]
+                    except IndexError:
+                        color = None
+                    if n == 1:
+                        linestyle = '--'
+                    else:
+                        linestyle = '-'
+                    coeff_ax.plot(cs, coeffs[c, n, i], color=color, lw=3.5, linestyle=linestyle)
+                    coeff_ax.set_ylim(cmin, cmax)
+                else:
+                    coeff_ax.plot(cs, coeffs[c, n, i], lw=3.5)
 
-    if plot_exp:
-        return fig, (coeff_ax, acc_ax, pred_ax)
-    else:
-        return fig, (coeff_ax, acc_ax)
+    return fig, (coeff_axes, acc_axes)
 
 
-def plotly_l1_path(cs, coeffs):
-    """ Useful for mouse-over identification of curves when there are too many
+def plot_rydberg_snap(snap, ax=None):
+    """ Plots a single-channel Rydberg snapshot, optionally into the given `ax`.
     """
-    import plotly.graph_objects as go
-    import plotly.io as pio
-    pio.renderers.default = 'browser'
-    fig = go.Figure()
-    for i in range(coeffs.shape[1]):
-        fig.add_trace(go.Scatter(
-            x=cs,
-            y=-coeffs[:, i],
-            mode='lines',
-            name=str(i),
-        ))
-    fig.update_layout(xaxis_type='log')
-    fig.show()
+    from matplotlib.collections import CircleCollection
+
+    W, H = snap.shape[-1], snap.shape[-2]
+
+    plt.rc('axes', linewidth=6)
+
+    radius = 200
+    rads = radius * np.ones_like(snap.flatten())
+
+    lattice = np.stack(np.meshgrid(np.arange(W), np.arange(H)), axis=-1).reshape(-1, 2)
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(5, 5))
+    circs = CircleCollection(rads, offsets=lattice, cmap='Purples', transOffset=ax.transData,
+                             edgecolors='black', linewidths=3,)
+    circs.set_array(snap.flatten())
+    ax.add_collection(circs)
+
+    ax.autoscale_view()
+    ax.set_aspect(1.0)
+    ax.set_facecolor('xkcd:grey')
+    ax.tick_params(
+        axis='both',
+        which='both',
+        bottom=False,
+        top=False,
+        labelbottom=False,
+        left=False,
+        right=False,
+        labelleft=False
+    )
+
+    return ax
+
